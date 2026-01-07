@@ -1,0 +1,27 @@
+[Unit]
+Description=DuckHunt HID Injection Detection Service
+Documentation=https://github.com/yourorg/duckhunt
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/usr/local/lib/duckhunt
+ExecStart=/usr/bin/python3 /usr/local/lib/duckhunt/collectors/linux/evdev_reader.py --output /var/log/duckhunt/events.jsonl
+Restart=always
+RestartSec=5s
+
+# Security settings
+PrivateTmp=yes
+NoNewPrivileges=false
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/log/duckhunt /var/lib/duckhunt
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=duckhunt
+
+[Install]
+WantedBy=multi-user.target

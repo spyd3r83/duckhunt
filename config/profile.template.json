@@ -1,0 +1,55 @@
+{
+  "version": "2.0",
+  "created_at": "2025-01-05T00:00:00Z",
+  "last_updated": "2025-01-05T00:00:00Z",
+  "learning_phase": "initial",
+  "sample_count": 0,
+
+  "speed_distribution": {
+    "mean_ms": 0,
+    "std_dev_ms": 0,
+    "median_ms": 0,
+    "q1": 0,
+    "q3": 0,
+    "min_ms": 0,
+    "max_ms": 0
+  },
+
+  "digraph_timings": {},
+
+  "key_hold_duration": {},
+
+  "typing_patterns": {
+    "average_speed_wpm": 0,
+    "burst_speed_wpm": 0,
+    "pause_speed_wpm": 0,
+    "error_rate": 0,
+    "correction_pattern": {
+      "immediate_backspace_pct": 0,
+      "delayed_correction_pct": 0
+    }
+  },
+
+  "mouse_characteristics": {
+    "enabled": false,
+    "average_velocity_px_s": 0,
+    "max_velocity_px_s": 0,
+    "average_acceleration_px_s2": 0,
+    "movement_smoothness": 0,
+    "click_interval_ms": {
+      "mean": 0,
+      "std_dev": 0
+    }
+  },
+
+  "temporal_patterns": {
+    "active_hours": [],
+    "typing_rhythm_variance": 0
+  },
+
+  "metadata": {
+    "platform": "",
+    "keyboard_layout": "en-US",
+    "adaptive_learning_rate": 0.05
+  }
+}

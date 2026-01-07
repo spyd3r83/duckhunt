@@ -1,0 +1,24 @@
+REM DuckHunt Test Payload: Simple RubberDucky Script
+REM This is a SYNTHETIC test payload for DuckHunt detection validation
+REM DO NOT use this for malicious purposes
+
+REM Test 1: Fast keystroke injection (10ms delays)
+DELAY 100
+GUI r
+DELAY 50
+STRING cmd
+ENTER
+DELAY 200
+STRING echo Malicious payload executed
+ENTER
+DELAY 100
+STRING exit
+ENTER
+
+REM Expected Detection:
+REM - Speed anomaly (10-50ms intervals vs ~145ms human average)
+REM - Pattern match: WIN+R, "cmd", "echo"
+REM - Zero error rate (no backspaces)
+REM - Hardware injection flag (if supported by test framework)
+
+REM Detection Confidence: Expected >0.90
