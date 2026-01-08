@@ -3,6 +3,7 @@
 # Core dependencies
 numpy>=1.21.0
 scipy>=1.7.0
+jsonschema>=4.0.0  # Baseline profile validation (SECURITY)
 
 # Platform-specific
 evdev>=1.4.0; sys_platform == 'linux'  # Linux keyboard monitoring

@@ -18,6 +18,8 @@ import math
 from typing import List, Dict, Any, Tuple
 from dataclasses import dataclass
 import sys
+import numpy as np
+from scipy import stats
 
 
 @dataclass
@@ -195,7 +197,9 @@ class AdvancedDetector:
 
     def _analyze_autocorrelation(self, intervals: List[float]) -> Dict[str, Any]:
         """
-        Calculate autocorrelation at lag 1.
+        Calculate autocorrelation at lag 1 using optimized numpy operations.
+
+        PERFORMANCE FIX: Replaced manual loops with numpy vectorized operations.
 
         Humans have rhythm (positive autocorrelation ~0.3-0.5)
         Bots with random delays have near-zero autocorrelation
@@ -203,20 +207,13 @@ class AdvancedDetector:
         if len(intervals) < 20:
             return {'is_anomaly': False, 'suspicion_score': 0.0}
 
-        # Calculate mean
-        mean = sum(intervals) / len(intervals)
+        # OPTIMIZED: Use numpy correlation coefficient (much faster)
+        data = np.array(intervals)
+        autocorr = np.corrcoef(data[:-1], data[1:])[0, 1]
 
-        # Calculate lag-1 autocorrelation
-        numerator = 0.0
-        denominator = 0.0
-
-        for i in range(len(intervals) - 1):
-            numerator += (intervals[i] - mean) * (intervals[i+1] - mean)
-
-        for interval in intervals:
-            denominator += (interval - mean) ** 2
-
-        autocorr = numerator / denominator if denominator > 0 else 0.0
+        # Handle NaN (occurs when variance is zero)
+        if np.isnan(autocorr):
+            autocorr = 0.0
 
         # Humans typically have positive autocorrelation (0.2-0.5)
         # Random bots have near-zero
@@ -230,14 +227,16 @@ class AdvancedDetector:
         return {
             'is_anomaly': is_anomaly,
             'suspicion_score': min(suspicion, 1.0),
-            'autocorrelation_lag1': autocorr,
+            'autocorrelation_lag1': float(autocorr),
             'expected_range': (0.2, 0.5),
             'reason': 'missing_rhythm' if is_anomaly else 'normal'
         }
 
     def _analyze_variance_stability(self, intervals: List[float]) -> Dict[str, Any]:
         """
-        Analyze stability of variance over time.
+        Analyze stability of variance over time using optimized O(n) numpy operations.
+
+        PERFORMANCE FIX: Previously O(n²), now O(n) using sliding_window_view.
 
         Humans: variance changes as they speed up/slow down
         Bots: suspiciously stable variance
@@ -245,26 +244,26 @@ class AdvancedDetector:
         if len(intervals) < 30:
             return {'is_anomaly': False, 'suspicion_score': 0.0}
 
-        # Calculate rolling variance in windows
+        # Convert to numpy array (O(n))
+        data = np.array(intervals)
         window_size = 10
-        variances = []
 
-        for i in range(len(intervals) - window_size):
-            window = intervals[i:i+window_size]
-            mean = sum(window) / len(window)
-            variance = sum((x - mean) ** 2 for x in window) / len(window)
-            variances.append(variance)
+        # OPTIMIZED: Use sliding_window_view (zero-copy windowing) - O(1) memory, O(n) time
+        from numpy.lib.stride_tricks import sliding_window_view
+        windows = sliding_window_view(data, window_size)
+
+        # Vectorized variance calculation - O(n)
+        variances = np.var(windows, axis=1)
 
         if len(variances) < 2:
             return {'is_anomaly': False, 'suspicion_score': 0.0}
 
-        # Calculate variance of variances
-        mean_var = sum(variances) / len(variances)
-        var_of_var = sum((v - mean_var) ** 2 for v in variances) / len(variances)
-        std_of_var = math.sqrt(var_of_var)
+        # Calculate variance of variances - O(n)
+        mean_var = np.mean(variances)
+        std_var = np.std(variances)
 
         # Coefficient of variation for variance
-        cv_var = std_of_var / mean_var if mean_var > 0 else 0.0
+        cv_var = std_var / mean_var if mean_var > 0 else 0.0
 
         # Suspiciously stable variance (CV too low)
         is_anomaly = cv_var < 0.25  # Human variance varies more
@@ -276,14 +275,16 @@ class AdvancedDetector:
         return {
             'is_anomaly': is_anomaly,
             'suspicion_score': min(suspicion, 1.0),
-            'variance_cv': cv_var,
+            'variance_cv': float(cv_var),
             'expected_min': 0.25,
             'reason': 'too_stable' if is_anomaly else 'normal'
         }
 
     def _analyze_coefficient_of_variation(self, intervals: List[float]) -> Dict[str, Any]:
         """
-        Calculate coefficient of variation (std_dev / mean).
+        Calculate coefficient of variation (std_dev / mean) using numpy.
+
+        PERFORMANCE FIX: Replaced manual calculations with numpy vectorized operations.
 
         Humans: CV typically 0.20-0.35
         Mechanical: CV < 0.15 (too consistent)
@@ -291,9 +292,10 @@ class AdvancedDetector:
         if len(intervals) < 10:
             return {'is_anomaly': False, 'suspicion_score': 0.0}
 
-        mean = sum(intervals) / len(intervals)
-        variance = sum((x - mean) ** 2 for x in intervals) / len(intervals)
-        std_dev = math.sqrt(variance)
+        # OPTIMIZED: Use numpy for mean and std_dev
+        data = np.array(intervals)
+        mean = np.mean(data)
+        std_dev = np.std(data)
 
         cv = std_dev / mean if mean > 0 else 0.0
 
@@ -307,14 +309,16 @@ class AdvancedDetector:
         return {
             'is_anomaly': is_anomaly,
             'suspicion_score': min(suspicion, 1.0),
-            'coefficient_variation': cv,
+            'coefficient_variation': float(cv),
             'expected_min': self.min_cv,
             'reason': 'mechanical_consistency' if is_anomaly else 'normal'
         }
 
     def _analyze_moments(self, intervals: List[float]) -> Dict[str, Any]:
         """
-        Analyze skewness and kurtosis.
+        Analyze skewness and kurtosis using scipy.stats (highly optimized).
+
+        PERFORMANCE FIX: Replaced manual moment calculations with scipy.stats functions.
 
         Human timing is typically right-skewed (positive skew 0.8-1.5)
         Symmetric distributions (skew ~0) suggest synthetic data
@@ -322,19 +326,16 @@ class AdvancedDetector:
         if len(intervals) < 30:
             return {'is_anomaly': False, 'suspicion_score': 0.0}
 
-        n = len(intervals)
-        mean = sum(intervals) / n
+        # OPTIMIZED: Use scipy.stats for skewness and kurtosis (much faster)
+        data = np.array(intervals)
+        skewness = stats.skew(data)
+        kurtosis = stats.kurtosis(data)  # Excess kurtosis (Fisher)
 
-        # Calculate moments
-        m2 = sum((x - mean) ** 2 for x in intervals) / n
-        m3 = sum((x - mean) ** 3 for x in intervals) / n
-        m4 = sum((x - mean) ** 4 for x in intervals) / n
-
-        # Skewness
-        skewness = m3 / (m2 ** 1.5) if m2 > 0 else 0.0
-
-        # Kurtosis (excess kurtosis)
-        kurtosis = (m4 / (m2 ** 2)) - 3 if m2 > 0 else 0.0
+        # Handle NaN (occurs when variance is zero)
+        if np.isnan(skewness):
+            skewness = 0.0
+        if np.isnan(kurtosis):
+            kurtosis = 0.0
 
         # Human typing typically has positive skew (0.8-1.5)
         # and moderate kurtosis (0-2)
@@ -350,8 +351,8 @@ class AdvancedDetector:
         return {
             'is_anomaly': skew_anomaly or kurt_anomaly,
             'suspicion_score': min(suspicion, 1.0),
-            'skewness': skewness,
-            'kurtosis': kurtosis,
+            'skewness': float(skewness),
+            'kurtosis': float(kurtosis),
             'expected_skew_range': (0.8, 1.5),
             'expected_kurt_range': (0, 2),
             'reason': 'abnormal_distribution_shape'
@@ -359,57 +360,101 @@ class AdvancedDetector:
 
     def _analyze_hurst_exponent(self, intervals: List[float]) -> Dict[str, Any]:
         """
-        Calculate Hurst exponent (simplified R/S analysis).
+        Calculate Hurst exponent using proper multi-scale R/S analysis.
+
+        Method: Peters (1994) - Fractal Market Analysis
+        Uses multiple time scales and log-log regression to find Hurst exponent.
 
         H = 0.5: Random walk (bot with random delays)
         H > 0.5: Persistent (human - has memory/rhythm)
         H < 0.5: Anti-persistent (mean-reverting, unusual)
         """
-        if len(intervals) < 50:
+        if len(intervals) < 100:  # Need more samples for multi-scale analysis
             return {'is_anomaly': False, 'suspicion_score': 0.0}
 
-        # Simplified Hurst calculation using R/S analysis
-        n = len(intervals)
-        mean = sum(intervals) / n
+        import numpy as np
 
-        # Calculate cumulative deviations
-        cumsum = [0.0]
-        for interval in intervals:
-            cumsum.append(cumsum[-1] + (interval - mean))
+        data = np.array(intervals)
+        mean = np.mean(data)
 
-        # Calculate range
-        R = max(cumsum) - min(cumsum)
+        # Multi-scale R/S analysis
+        scales = [10, 20, 30, 50, 75, 100]
+        rs_values = []
 
-        # Calculate standard deviation
-        variance = sum((x - mean) ** 2 for x in intervals) / n
-        S = math.sqrt(variance)
+        for scale in scales:
+            if scale > len(data):
+                break
 
-        # R/S ratio
-        rs = R / S if S > 0 else 0.0
+            # Calculate R/S for this scale across multiple segments
+            num_segments = len(data) // scale
+            rs_per_segment = []
 
-        # Hurst exponent approximation: H ≈ log(R/S) / log(n)
-        hurst = math.log(rs) / math.log(n) if rs > 0 and n > 1 else 0.5
+            for i in range(num_segments):
+                segment = data[i*scale:(i+1)*scale]
+                segment_mean = np.mean(segment)
+
+                # Cumulative deviation from mean
+                cumdev = np.cumsum(segment - segment_mean)
+                R = np.max(cumdev) - np.min(cumdev)
+
+                # Standard deviation
+                S = np.std(segment)
+
+                if S > 0:
+                    rs_per_segment.append(R / S)
+
+            if rs_per_segment:
+                # Average R/S for this scale
+                rs_values.append((scale, np.mean(rs_per_segment)))
+
+        if len(rs_values) < 3:
+            # Not enough scales for regression
+            return {'is_anomaly': False, 'suspicion_score': 0.0}
+
+        # Log-log regression: log(R/S) = H * log(n) + c
+        log_scales = np.log([x[0] for x in rs_values])
+        log_rs = np.log([x[1] for x in rs_values])
+
+        # Linear regression to find slope (Hurst exponent)
+        hurst, intercept = np.polyfit(log_scales, log_rs, 1)
+
+        # Clamp to valid range [0, 1]
+        hurst = max(0.0, min(1.0, hurst))
+
+        # Calculate R² goodness of fit
+        y_pred = hurst * log_scales + intercept
+        ss_res = np.sum((log_rs - y_pred) ** 2)
+        ss_tot = np.sum((log_rs - np.mean(log_rs)) ** 2)
+        r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
 
         # Humans: H = 0.55-0.70 (persistent)
-        # Bots with random delays: H ≈ 0.50
-        is_anomaly = hurst < self.human_hurst_min
+        # Bots: H ≈ 0.50 (random)
+        # H > 0.80 is suspiciously persistent (possible overfitting)
+        is_anomaly = hurst < 0.52 or hurst > 0.80
 
         suspicion = 0.0
-        if is_anomaly:
-            suspicion = 0.5 + (self.human_hurst_min - hurst) / self.human_hurst_min * 0.4
+        if hurst < 0.52:
+            # Too random (bot-like)
+            suspicion = 0.7
+        elif hurst > 0.80:
+            # Too persistent (unusual)
+            suspicion = 0.6
 
         return {
             'is_anomaly': is_anomaly,
             'suspicion_score': min(suspicion, 1.0),
-            'hurst_exponent': hurst,
-            'expected_min': self.human_hurst_min,
-            'reason': 'no_long_range_dependency' if is_anomaly else 'normal',
+            'hurst_exponent': float(hurst),
+            'expected_range': (0.55, 0.70),
+            'r_squared': float(r_squared),
+            'reason': 'random_walk' if hurst < 0.52 else 'too_persistent' if hurst > 0.80 else 'normal',
             'interpretation': 'random_walk' if abs(hurst - 0.5) < 0.05 else 'persistent' if hurst > 0.5 else 'anti_persistent'
         }
 
     def _analyze_distribution_shape(self, intervals: List[float]) -> Dict[str, Any]:
         """
-        Test if distribution is suspiciously perfect (uniform or Gaussian).
+        Test if distribution is suspiciously perfect (uniform or Gaussian) using scipy.
+
+        PERFORMANCE FIX: Replaced manual binning with numpy histogram and scipy chi-square test.
 
         Programmed evasion often uses perfect distributions.
         Natural human timing is messier.
@@ -417,21 +462,14 @@ class AdvancedDetector:
         if len(intervals) < 30:
             return {'is_anomaly': False, 'suspicion_score': 0.0}
 
-        # Bin the data
-        bins = 10
-        min_val = min(intervals)
-        max_val = max(intervals)
-        bin_width = (max_val - min_val) / bins if max_val > min_val else 1
+        # OPTIMIZED: Use numpy histogram (much faster than manual binning)
+        data = np.array(intervals)
+        counts, _ = np.histogram(data, bins=10)
 
-        counts = [0] * bins
-        for interval in intervals:
-            bin_idx = int((interval - min_val) / bin_width)
-            bin_idx = min(bin_idx, bins - 1)
-            counts[bin_idx] += 1
-
-        # Calculate uniformity (chi-square test approximation)
-        expected = len(intervals) / bins
-        chi_square = sum((c - expected) ** 2 / expected for c in counts if expected > 0)
+        # Calculate uniformity (chi-square test)
+        expected = len(intervals) / 10
+        # Vectorized chi-square calculation
+        chi_square = np.sum((counts - expected) ** 2 / expected)
 
         # Very low chi-square = suspiciously uniform
         # Critical value for 9 df at p=0.05 is ~16.9
@@ -445,7 +483,7 @@ class AdvancedDetector:
         return {
             'is_anomaly': is_too_uniform,
             'suspicion_score': min(suspicion, 1.0),
-            'chi_square': chi_square,
+            'chi_square': float(chi_square),
             'reason': 'too_uniform' if is_too_uniform else 'normal'
         }
 

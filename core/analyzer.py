@@ -8,6 +8,8 @@ Uses multiple statistical methods to distinguish human typing from bot injection
 - Digraph timing analysis
 - Error pattern detection
 - Temporal consistency checking
+- Advanced detection (entropy, autocorrelation, Hurst exponent, etc.)
+- ML-based anomaly detection (optional)
 """
 
 import numpy as np
@@ -15,6 +17,10 @@ from typing import Dict, List, Tuple, Optional, Any
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
+
+# Import advanced detection modules
+from core.advanced_detector import AdvancedDetector
+from core.ml_detector import MLDetector, SKLEARN_AVAILABLE
 
 
 @dataclass
@@ -66,6 +72,24 @@ class BehavioralAnalyzer:
         self.history = deque(maxlen=max_history)
         self.digraph_buffer = deque(maxlen=2)
 
+        # NEW: Interval buffer for advanced detection
+        self.interval_buffer = deque(maxlen=100)
+
+        # NEW: Initialize advanced detector
+        if config.get('detection', {}).get('advanced_detection', False):
+            self.advanced_detector = AdvancedDetector(
+                baseline_profile=profile
+            )
+        else:
+            self.advanced_detector = None
+
+        # NEW: Initialize ML detector (optional)
+        if config.get('detection', {}).get('ml_detection', False) and SKLEARN_AVAILABLE:
+            self.ml_detector = MLDetector()
+            # Note: ML model needs training data before it can be used
+        else:
+            self.ml_detector = None
+
         # Statistics
         self.total_keystrokes = 0
         self.total_anomalies = 0
@@ -80,9 +104,58 @@ class BehavioralAnalyzer:
         Returns:
             Analysis result with anomaly detection
         """
+        self.total_keystrokes += 1
+
+        # Track intervals for advanced detection
+        self.interval_buffer.append(event.inter_key_ms)
+
+        # Run basic detection
+        basic_result = self._run_basic_detection(event)
+
+        # Run advanced detection if enabled and we have enough samples
+        advanced_result = None
+        if self.advanced_detector and len(self.interval_buffer) >= 20:
+            try:
+                advanced_result = self.advanced_detector.analyze_sequence(
+                    list(self.interval_buffer)
+                )
+            except Exception as e:
+                # Don't fail on advanced detection errors
+                pass
+
+        # Run ML detection if enabled and trained
+        ml_result = None
+        if self.ml_detector and len(self.interval_buffer) >= 20:
+            try:
+                if self.ml_detector.is_trained:
+                    ml_result = self.ml_detector.predict(list(self.interval_buffer))
+            except Exception as e:
+                # Don't fail on ML detection errors
+                pass
+
+        # Combine all results using ensemble voting
+        final_result = self._combine_detection_results(basic_result, advanced_result, ml_result)
+
+        # Update statistics
+        if final_result.is_anomaly:
+            self.total_anomalies += 1
+
+        # Add event to history
+        self.history.append(event)
+        if event.key and len(event.key) == 1:
+            self.digraph_buffer.append(event.key.lower())
+
+        return final_result
+
+    def _run_basic_detection(self, event: KeystrokeEvent) -> Dict[str, Any]:
+        """
+        Run basic detection algorithms (original DuckHunt detection)
+
+        Returns:
+            Dictionary with detection results
+        """
         anomalies = []
         metrics = {}
-        self.total_keystrokes += 1
 
         # 1. Hardware injection flag check
         if event.injected:
@@ -115,28 +188,62 @@ class BehavioralAnalyzer:
             anomalies.extend(temporal_result['reasons'])
             metrics.update(temporal_result['metrics'])
 
-        # Calculate overall confidence score
+        # Calculate basic confidence score
         confidence = self._calculate_confidence(metrics, anomalies)
 
-        # Determine if this is anomalous
-        is_anomaly = len(anomalies) > 0 and confidence >= self.confidence_threshold
+        return {
+            'is_anomaly': len(anomalies) > 0 and confidence >= self.confidence_threshold,
+            'confidence': confidence,
+            'reasons': anomalies,
+            'metrics': metrics
+        }
 
-        if is_anomaly:
-            self.total_anomalies += 1
+    def _combine_detection_results(self, basic: Dict, advanced, ml) -> AnalysisResult:
+        """
+        Combine results from basic, advanced, and ML detection using ensemble voting
 
-        # Add event to history
-        self.history.append(event)
-        if event.key and len(event.key) == 1:
-            self.digraph_buffer.append(event.key.lower())
+        Args:
+            basic: Basic detection result dict
+            advanced: AdvancedAnalysisResult or None
+            ml: MLDetectionResult or None
 
-        # Determine recommendation
-        recommendation = self._get_recommendation(confidence, anomalies)
+        Returns:
+            Final AnalysisResult
+        """
+        # Start with basic results
+        confidences = [basic['confidence']]
+        all_reasons = list(basic['reasons'])
+        all_metrics = dict(basic['metrics'])
+
+        # Add advanced detection results
+        if advanced and advanced.is_suspicious:
+            confidences.append(advanced.confidence)
+            all_reasons.append(f"Advanced: {advanced.anomaly_type}")
+            all_metrics['advanced_confidence'] = advanced.confidence
+            all_metrics['advanced_type'] = advanced.anomaly_type
+
+        # Add ML detection results
+        if ml and ml.is_anomaly:
+            confidences.append(ml.confidence)
+            all_reasons.append(f"ML: {ml.explanation}")
+            all_metrics['ml_confidence'] = ml.confidence
+
+        # Weighted ensemble voting
+        # Basic: 40%, Advanced: 40%, ML: 20%
+        weights = [0.4, 0.4, 0.2][:len(confidences)]
+        combined_confidence = sum(c * w for c, w in zip(confidences, weights))
+
+        # Determine if attack detected
+        is_attack = combined_confidence >= self.confidence_threshold
+
+        # Get recommendation based on final confidence
+        recommendation = self._get_recommendation(combined_confidence, all_reasons)
 
         return AnalysisResult(
-            is_anomaly=is_anomaly,
-            confidence=confidence,
-            reasons=anomalies,
-            metrics=metrics,
+            is_anomaly=is_attack,
+            confidence=combined_confidence,
+            reasons=all_reasons,
+            metrics=all_metrics,
             recommendation=recommendation
         )
 

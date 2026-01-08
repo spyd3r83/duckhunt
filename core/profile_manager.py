@@ -13,16 +13,66 @@ NO raw keystroke content is stored.
 
 import json
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import numpy as np
+
+try:
+    import jsonschema
+    JSONSCHEMA_AVAILABLE = True
+except ImportError:
+    JSONSCHEMA_AVAILABLE = False
 
 
 class ProfileManager:
     """Manages user behavioral profiles"""
 
     PROFILE_VERSION = "2.0"
+
+    # Baseline profile validation schema
+    BASELINE_SCHEMA = {
+        "type": "object",
+        "required": ["version", "sample_count", "speed_distribution"],
+        "properties": {
+            "version": {"type": "string"},
+            "sample_count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000
+            },
+            "speed_distribution": {
+                "type": "object",
+                "required": ["mean_ms", "std_dev_ms"],
+                "properties": {
+                    "mean_ms": {
+                        "type": "number",
+                        "minimum": 10,
+                        "maximum": 1000
+                    },
+                    "std_dev_ms": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 500
+                    },
+                    "q1": {"type": "number", "minimum": 0},
+                    "median": {"type": "number", "minimum": 0},
+                    "q3": {"type": "number", "minimum": 0},
+                    "skewness": {"type": "number"},
+                    "kurtosis": {"type": "number"}
+                }
+            },
+            "digraph_timings": {"type": "object"},
+            "trigram_patterns": {"type": "object"},
+            "dwell_time": {"type": "object"},
+            "flight_time": {"type": "object"},
+            "autocorrelation": {"type": "object"},
+            "fatigue_pattern": {"type": "object"},
+            "entropy_range": {"type": "object"},
+            "hurst_baseline": {"type": "object"}
+        }
+    }
 
     def __init__(self, profile_path: str, config: Dict[str, Any], baseline_path: str = None):
         """
@@ -45,6 +95,13 @@ class ProfileManager:
         self.baseline_path = Path(baseline_path) if baseline_path else Path('config/baseline.profile.json')
         self.baseline_profile = None
         self.use_baseline = True  # Start with baseline until user profile trained
+
+        # PERFORMANCE: Caching and batch saves
+        self._baseline_cache = None
+        self._baseline_cache_time = None
+        self._profile_dirty = False
+        self._last_save_time = 0
+        self._save_interval = config.get('performance', {}).get('save_interval', 60)  # Batch saves every 60 seconds
 
     def initialize_profile(self) -> Dict[str, Any]:
         """
@@ -132,10 +189,27 @@ class ProfileManager:
             self.profile = self.initialize_profile()
             return self.profile
 
-    def save_profile(self):
-        """Save profile to disk"""
+    def save_profile(self, force: bool = False):
+        """
+        Save profile to disk with batching optimization.
+
+        PERFORMANCE: Batch saves to avoid I/O on every keystroke.
+        Only saves if profile is dirty and enough time has passed.
+
+        Args:
+            force: If True, save immediately regardless of batch interval
+        """
         if self.profile is None:
             return
+
+        # PERFORMANCE: Batch saves - only save if dirty and interval passed
+        if not force:
+            if not self._profile_dirty:
+                return  # Nothing to save
+
+            time_since_last_save = time.time() - self._last_save_time
+            if time_since_last_save < self._save_interval:
+                return  # Too soon, batch it
 
         self.profile['last_updated'] = datetime.utcnow().isoformat() + 'Z'
 
@@ -146,11 +220,16 @@ class ProfileManager:
         temp_path = self.profile_path.with_suffix('.tmp')
 
         try:
+            # Compact JSON (no indent) for smaller files
             with open(temp_path, 'w') as f:
-                json.dump(self.profile, f, indent=2)
+                json.dump(self.profile, f, separators=(',', ':'))
 
             # Atomic rename
             temp_path.replace(self.profile_path)
+
+            # Update state
+            self._profile_dirty = False
+            self._last_save_time = time.time()
 
         except Exception as e:
             print(f"Error saving profile: {e}")
@@ -182,6 +261,9 @@ class ProfileManager:
         }
 
         self.profile['sample_count'] = len(speed_samples)
+
+        # Mark profile as dirty for batch saving
+        self._profile_dirty = True
 
     def update_digraph_timing(self, digraph: str, interval_ms: float):
         """
@@ -221,6 +303,9 @@ class ProfileManager:
             dg['mean_ms'] = new_mean
             dg['samples'] += 1
 
+        # Mark profile as dirty for batch saving
+        self._profile_dirty = True
+
     def update_error_rate(self, error_count: int, total_keystrokes: int):
         """
         Update typing error rate
@@ -242,6 +327,9 @@ class ProfileManager:
                 alpha = self.learning_rate
                 old_rate = self.profile['typing_patterns']['error_rate']
                 self.profile['typing_patterns']['error_rate'] = (1 - alpha) * old_rate + alpha * new_error_rate
+
+            # Mark profile as dirty for batch saving
+            self._profile_dirty = True
 
     def update_typing_speed_wpm(self, speed_wpm: float, speed_type: str = 'average'):
         """
@@ -270,6 +358,9 @@ class ProfileManager:
             old_speed = self.profile['typing_patterns'][key]
             self.profile['typing_patterns'][key] = (1 - alpha) * old_speed + alpha * speed_wpm
 
+        # Mark profile as dirty for batch saving
+        self._profile_dirty = True
+
     def update_active_hours(self, hour: int):
         """
         Track active typing hours
@@ -283,6 +374,9 @@ class ProfileManager:
         active_hours = set(self.profile['temporal_patterns']['active_hours'])
         active_hours.add(hour)
         self.profile['temporal_patterns']['active_hours'] = sorted(list(active_hours))
+
+        # Mark profile as dirty for batch saving
+        self._profile_dirty = True
 
     def get_learning_phase(self) -> str:
         """
@@ -367,23 +461,209 @@ class ProfileManager:
         """
         Load universal baseline profile for immediate protection.
 
+        SECURITY: Validates baseline profile to prevent tampering:
+        - JSON schema validation
+        - Range validation for all numeric fields
+        - Checksum verification (TODO)
+
+        PERFORMANCE: Caches baseline profile for 1 hour to avoid repeated I/O
+
         Returns:
-            Baseline profile dictionary, or None if not found
+            Baseline profile dictionary, or emergency baseline if validation fails
         """
+        # PERFORMANCE: Check cache first (1-hour TTL)
+        if self._baseline_cache is not None and self._baseline_cache_time is not None:
+            cache_age = time.time() - self._baseline_cache_time
+            if cache_age < 3600:  # 1 hour
+                return self._baseline_cache
+
         if not self.baseline_path.exists():
             print(f"Warning: Baseline profile not found at {self.baseline_path}")
-            return None
+            print("Using emergency baseline profile for fail-secure operation")
+            self.baseline_profile = self._get_emergency_baseline()
+            return self.baseline_profile
 
         try:
             with open(self.baseline_path, 'r') as f:
-                self.baseline_profile = json.load(f)
+                profile = json.load(f)
 
-            print(f"Loaded baseline profile (sample_count: {self.baseline_profile.get('sample_count', 0)})")
+            # 1. Schema validation (if jsonschema available)
+            if JSONSCHEMA_AVAILABLE:
+                try:
+                    jsonschema.validate(profile, self.BASELINE_SCHEMA)
+                except jsonschema.ValidationError as e:
+                    print(f"ERROR: Baseline profile schema validation failed: {e.message}")
+                    print("Using emergency baseline profile for fail-secure operation")
+                    self.baseline_profile = self._get_emergency_baseline()
+                    return self.baseline_profile
+            else:
+                print("Warning: jsonschema not available, skipping schema validation")
+
+            # 2. Range validation (critical security check)
+            if not self._validate_baseline_ranges(profile):
+                print("ERROR: Baseline profile range validation failed")
+                print("Using emergency baseline profile for fail-secure operation")
+                self.baseline_profile = self._get_emergency_baseline()
+                return self.baseline_profile
+
+            # 3. TODO: Checksum verification
+            # checksum = profile.get('_checksum')
+            # if checksum and not self._verify_checksum(profile, checksum):
+            #     print("ERROR: Baseline profile checksum mismatch - possible tampering")
+            #     return self._get_emergency_baseline()
+
+            # Profile passed all validation
+            self.baseline_profile = profile
+
+            # PERFORMANCE: Populate cache
+            self._baseline_cache = profile
+            self._baseline_cache_time = time.time()
+
+            print(f"Loaded baseline profile (sample_count: {profile.get('sample_count', 0)})")
             return self.baseline_profile
 
         except json.JSONDecodeError as e:
-            print(f"Error loading baseline profile: {e}")
-            return None
+            print(f"ERROR: Baseline profile JSON decode failed: {e}")
+            print("Using emergency baseline profile for fail-secure operation")
+            self.baseline_profile = self._get_emergency_baseline()
+            return self.baseline_profile
+        except Exception as e:
+            print(f"ERROR: Unexpected error loading baseline profile: {e}")
+            print("Using emergency baseline profile for fail-secure operation")
+            self.baseline_profile = self._get_emergency_baseline()
+            return self.baseline_profile
+
+    def _validate_baseline_ranges(self, profile: Dict[str, Any]) -> bool:
+        """
+        Validate baseline profile numeric ranges.
+
+        SECURITY: Critical check to prevent malicious baseline profiles
+        with extreme values that could bypass detection.
+
+        Args:
+            profile: Baseline profile to validate
+
+        Returns:
+            True if all ranges valid, False otherwise
+        """
+        try:
+            # Validate speed distribution
+            speed = profile.get('speed_distribution', {})
+            mean_ms = speed.get('mean_ms', 0)
+            std_dev_ms = speed.get('std_dev_ms', 0)
+
+            # Mean must be reasonable (10-1000ms)
+            if not 10 <= mean_ms <= 1000:
+                print(f"Invalid mean_ms: {mean_ms} (expected 10-1000)")
+                return False
+
+            # Std dev must be reasonable (0-500ms)
+            if not 0 <= std_dev_ms <= 500:
+                print(f"Invalid std_dev_ms: {std_dev_ms} (expected 0-500)")
+                return False
+
+            # Coefficient of variation should be reasonable (0.05-0.50)
+            cv = std_dev_ms / mean_ms if mean_ms > 0 else 0
+            if not 0.05 <= cv <= 0.50:
+                print(f"Invalid CV: {cv} (expected 0.05-0.50)")
+                return False
+
+            # Validate quartiles if present
+            q1 = speed.get('q1', 0)
+            q3 = speed.get('q3', 0)
+            if q1 > 0 and q3 > 0:
+                # Q1 must be less than Q3
+                if q1 >= q3:
+                    print(f"Invalid quartiles: q1={q1} >= q3={q3}")
+                    return False
+
+                # IQR should be reasonable
+                iqr = q3 - q1
+                if not 10 <= iqr <= 500:
+                    print(f"Invalid IQR: {iqr} (expected 10-500)")
+                    return False
+
+            # Validate skewness and kurtosis if present
+            skewness = speed.get('skewness', 0)
+            kurtosis = speed.get('kurtosis', 0)
+
+            # Human typing should be right-skewed (0-3)
+            if skewness != 0 and not -1 <= skewness <= 5:
+                print(f"Invalid skewness: {skewness} (expected -1 to 5)")
+                return False
+
+            # Kurtosis should be reasonable (-2 to 10)
+            if kurtosis != 0 and not -2 <= kurtosis <= 10:
+                print(f"Invalid kurtosis: {kurtosis} (expected -2 to 10)")
+                return False
+
+            # Validate sample count
+            sample_count = profile.get('sample_count', 0)
+            if not 0 <= sample_count <= 1000000:
+                print(f"Invalid sample_count: {sample_count}")
+                return False
+
+            # All checks passed
+            return True
+
+        except Exception as e:
+            print(f"Error validating baseline ranges: {e}")
+            return False
+
+    def _get_emergency_baseline(self) -> Dict[str, Any]:
+        """
+        Get minimal hardcoded baseline profile for fail-secure operation.
+
+        Used when baseline.profile.json is missing, corrupt, or fails validation.
+
+        This emergency profile provides basic protection using conservative
+        estimates of human typing behavior.
+
+        Returns:
+            Emergency baseline profile dictionary
+        """
+        return {
+            "version": "2.0-emergency",
+            "sample_count": 1000,
+            "description": "Emergency baseline - minimal hardcoded profile for fail-secure operation",
+
+            "speed_distribution": {
+                "mean_ms": 145.0,
+                "std_dev_ms": 45.0,
+                "q1": 105.0,
+                "median": 140.0,
+                "q3": 175.0,
+                "iqr": 70.0,
+                "skewness": 1.2,
+                "kurtosis": 1.5
+            },
+
+            "digraph_timings": {
+                "th": 125.0,
+                "he": 130.0,
+                "in": 135.0,
+                "er": 128.0,
+                "an": 132.0
+            },
+
+            "autocorrelation": {
+                "lag1": 0.35,
+                "lag2": 0.20,
+                "lag3": 0.10
+            },
+
+            "entropy_range": {
+                "min": 4.0,
+                "max": 6.5,
+                "typical": 5.2
+            },
+
+            "hurst_baseline": {
+                "min": 0.55,
+                "max": 0.70,
+                "typical": 0.62
+            }
+        }
 
     def get_blended_profile(self) -> Dict[str, Any]:
         """
@@ -423,26 +703,28 @@ class ProfileManager:
         """
         Calculate baseline weight based on sample count.
 
+        SECURITY: Minimum 15% baseline prevents profile poisoning attacks
+        where an attacker slowly adapts the profile over days/weeks.
+
         Args:
             sample_count: Number of user samples
 
         Returns:
-            Baseline weight (0.05 to 1.0)
+            Baseline weight (0.15 to 1.0)
         """
+        MIN_WEIGHT = 0.15  # Increased from 0.05 to 0.15
+
         if sample_count == 0:
             return 1.0
         elif sample_count < 1000:
             # Linear decrease from 1.0 to 0.5
-            return 1.0 - (sample_count / 1000) * 0.5
+            return max(1.0 - (sample_count / 1000) * 0.5, MIN_WEIGHT)
         elif sample_count < 5000:
-            # Linear decrease from 0.5 to 0.2
-            return 0.5 - ((sample_count - 1000) / 4000) * 0.3
-        elif sample_count < 10000:
-            # Linear decrease from 0.2 to 0.05
-            return 0.2 - ((sample_count - 5000) / 5000) * 0.15
+            # Linear decrease from 0.5 to 0.3
+            return max(0.5 - ((sample_count - 1000) / 4000) * 0.2, MIN_WEIGHT)
         else:
-            # Minimum 5% baseline (prevents profile poisoning)
-            return 0.05
+            # Minimum 15% baseline (prevents profile poisoning)
+            return MIN_WEIGHT
 
     def _blend_profiles(self, baseline: Dict, personal: Dict, baseline_weight: float) -> Dict:
         """

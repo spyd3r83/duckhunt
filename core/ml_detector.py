@@ -10,7 +10,9 @@ If not available, falls back to statistical methods.
 
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
+from collections import deque
 import math
+import time
 
 try:
     from sklearn.ensemble import IsolationForest
@@ -19,6 +21,26 @@ try:
 except ImportError:
     SKLEARN_AVAILABLE = False
     np = None
+
+
+class RateLimiter:
+    """
+    Simple rate limiter to prevent DOS attacks via excessive prediction requests
+    """
+    def __init__(self, max_per_second: int = 20):
+        self.max_per_second = max_per_second
+        self.timestamps = deque(maxlen=max_per_second)
+
+    def is_exceeded(self) -> bool:
+        """Check if rate limit is exceeded"""
+        now = time.time()
+        self.timestamps.append(now)
+
+        if len(self.timestamps) == self.max_per_second:
+            oldest = self.timestamps[0]
+            if now - oldest < 1.0:
+                return True  # More than max_per_second requests in 1 second
+        return False
 
 
 @dataclass
@@ -70,6 +92,9 @@ class MLDetector:
             'range_ratio', 'q1', 'q3', 'iqr'
         ]
 
+        # Rate limiter to prevent DOS attacks
+        self.rate_limiter = RateLimiter(max_per_second=20)
+
     def train(self, training_sequences: List[List[float]]) -> None:
         """
         Train the model on normal human typing sequences.
@@ -105,22 +130,34 @@ class MLDetector:
         Returns:
             MLDetectionResult with prediction
         """
-        if not SKLEARN_AVAILABLE:
+        # Check rate limit FIRST (DOS prevention)
+        if self.rate_limiter.is_exceeded():
             return MLDetectionResult(
-                is_anomaly=False,
-                anomaly_score=0.0,
-                confidence=0.0,
+                is_anomaly=True,
+                anomaly_score=-0.5,
+                confidence=0.8,
                 features={},
-                explanation="scikit-learn not available"
+                explanation="Rate limit exceeded - possible DOS attack"
+            )
+
+        if not SKLEARN_AVAILABLE:
+            # Fail CLOSED: assume attack when sklearn not available
+            return MLDetectionResult(
+                is_anomaly=True,
+                anomaly_score=-0.2,
+                confidence=0.2,
+                features={},
+                explanation="scikit-learn not available - failing secure"
             )
 
         if not self.is_trained:
+            # SECURITY FIX: Fail CLOSED (assume attack when untrained)
             return MLDetectionResult(
-                is_anomaly=False,
-                anomaly_score=0.0,
-                confidence=0.0,
+                is_anomaly=True,
+                anomaly_score=-0.3,
+                confidence=0.3,
                 features={},
-                explanation="Model not trained yet"
+                explanation="ML model not trained - failing secure"
             )
 
         if len(intervals) < 20:
